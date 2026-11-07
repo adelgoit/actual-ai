@@ -68,7 +68,7 @@ services:
       ACTUAL_PASSWORD: your_actual_password
       ACTUAL_BUDGET_ID: your_actual_budget_sync_id # This is the ID from Settings → Show advanced settings → Sync ID
       CLASSIFICATION_SCHEDULE_CRON: 0 */4 * * * # How often to run classification.
-      LLM_PROVIDER: openai # Can be "openai", "openrouter", "anthropic", "google-generative-ai", "ollama" or "groq"
+      LLM_PROVIDER: openai # Can be "openai", "chatgpt", "openrouter", "anthropic", "google-generative-ai", "ollama" or "groq"
       FEATURES: '["classifyOnStartup", "syncAccountsBeforeClassify", "suggestNewCategories"]'
 #      VALUESERP_API_KEY: your_valueserp_api_key # API key for ValueSerp, required if webSearch tool is enabled
 #      OPENAI_API_KEY:  # optional. required if you want to use the OpenAI API
@@ -98,6 +98,133 @@ services:
 #      NOT_GUESSED_TAG=#actual-ai-miss
 #      GUESSED_TAG=#actual-ai
 ```
+
+### Use a ChatGPT plan on a self-hosted server
+
+The `chatgpt` provider uses [Sign in with ChatGPT](https://developers.openai.com/siwc/quickstart)
+and the signed-in account's eligible ChatGPT plan instead of an API key. It is in preview and
+subject to account eligibility, shared usage limits and OpenAI's terms. Usage may consume
+available credits if enabled on the account. Review usage and limits in
+[ChatGPT settings](https://chatgpt.com/#settings/usage). There is no automatic fallback to a
+paid API key. Transaction descriptions, amounts and notes are sent to OpenAI for classification.
+
+#### Docker on a remote Linux host: build from Git and sign in without copying files
+
+In the existing Compose service, keep your Actual Budget connection and feature settings and
+replace the image with the following build settings. Include `dryRun` in your existing `FEATURES`
+for the first test. This uses a named volume exclusively for ChatGPT credentials:
+
+```yaml
+services:
+  actual-ai:
+    image: actual-ai-chatgpt:local
+    build:
+      context: https://github.com/adelgoit/actual-ai.git#master
+    environment:
+      LLM_PROVIDER: chatgpt
+      CHATGPT_AUTH_DIR: /auth
+    volumes:
+      - chatgpt-auth:/auth
+
+volumes:
+  chatgpt-auth:
+    name: actual-ai-chatgpt-auth
+```
+
+The fork must contain the committed changes. Build or rebuild the image in Portainer before
+signing in. If Portainer manages Docker as a remote environment, its Compose build support may
+be restricted; consult [Portainer's known issue](https://docs.portainer.io/faqs/known-issues/docker-compose-files-including-build-steps-fail).
+Stop the service while signing in so it does not access the credentials concurrently.
+
+The following commands are run in PowerShell on Windows 11. Replace `USER` and `LXC_IP` with
+the SSH user and address of the **LXC running Docker**, not necessarily the Proxmox host. SSH
+access and permission for that user to run Docker are required. Run these two initialization
+commands once, after building the image, to make the dedicated volume writable only by the
+container's `node` user:
+
+```powershell
+ssh USER@LXC_IP docker run --rm --user 0 --entrypoint chown -v actual-ai-chatgpt-auth:/auth actual-ai-chatgpt:local 1000:1000 /auth
+ssh USER@LXC_IP docker run --rm --user 0 --entrypoint chmod -v actual-ai-chatgpt-auth:/auth actual-ai-chatgpt:local 700 /auth
+```
+
+Then start sign-in with a single command. It opens a temporary SSH tunnel and runs the login
+in a short-lived container on the Docker host. Open the printed OpenAI URL in the Windows
+browser, authorize the plan, and leave the terminal open until sign-in finishes:
+
+```powershell
+ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:1455:127.0.0.1:1455 USER@LXC_IP docker run --rm --network host -e CHATGPT_AUTH_DIR=/auth -e CHATGPT_CALLBACK_PORT=1455 -v actual-ai-chatgpt-auth:/auth actual-ai-chatgpt:local node dist/src/chatgpt-login.js login
+```
+
+Port 1455 must be available on Windows and on the LXC. The callback is bound to loopback;
+do not publish it through Nginx Proxy Manager. The temporary login container needs Linux host
+networking because Docker bridge port publishing cannot expose a listener bound to its own
+loopback. Start the service again after successful sign-in. No credentials are copied to the PC:
+the service reads and renews them from the named volume. The tunnel is needed again only if a
+new sign-in is required, for example after revocation or refresh-token expiry. To disconnect,
+stop the service and run `docker run --rm -e CHATGPT_AUTH_DIR=/auth -v actual-ai-chatgpt-auth:/auth actual-ai-chatgpt:local node dist/src/chatgpt-login.js logout` on the LXC.
+
+#### Alternative: local sign-in and protected transfer
+
+Build this version of the project on the server or deploy an image built from it. Add a private,
+persistent directory to the `actual-ai` service in your Compose file:
+
+```yaml
+services:
+  actual-ai:
+    environment:
+      LLM_PROVIDER: chatgpt
+      CHATGPT_AUTH_DIR: /data/chatgpt-auth
+      # Optional: select a model slug available to the connected account.
+      # CHATGPT_MODEL: your-model-slug
+    volumes:
+      - /your/private/actual-ai-chatgpt:/data/chatgpt-auth
+```
+
+Create that directory on the server with owner-only access (mode `700`), owned by the user
+running the container (`node`, normally UID 1000 in this image). Keep it outside the build
+context and backups accessible to others. The container must be able to write to it. Create
+the server's own host ID once:
+
+```sh
+docker compose run --rm --no-deps actual-ai node dist/src/chatgpt-login.js init-host
+```
+
+On your own computer, use Node.js 22 or newer, install the project dependencies and build the
+same source version. Run the login command and open the displayed URL on that computer:
+
+```sh
+npm ci
+npm run build
+node dist/src/chatgpt-login.js login
+```
+
+The callback listens only on `127.0.0.1`. Approve plan usage in the browser. The credential file
+is `~/.actual-ai-chatgpt/credentials.json` by default (`%USERPROFILE%\.actual-ai-chatgpt\credentials.json`
+on Windows). Set `CHATGPT_AUTH_DIR` before login to choose a different private directory. On
+Windows, restrict its ACL to your user; Unix directories must have mode `700` and credentials
+mode `600`. These files contain renewable credentials: do not email, log, commit, or include
+them in the Docker image.
+
+Transfer the credential file to the server over a secure channel such as SSH, placing the
+temporary copy in the mounted private directory with mode `600` and readable by the container
+user. With the service stopped, import it inside the container (the server's host ID is retained):
+
+```sh
+docker compose run --rm --no-deps actual-ai node dist/src/chatgpt-login.js import /data/chatgpt-auth/incoming.json
+```
+
+Remove the temporary `incoming.json` after a successful import. Start the service and verify a
+classification in dry-run mode before enabling normal changes. Once the server session is
+verified, remove the local credential copy; only the server should refresh this session. Do not
+import the same old file again after the server has refreshed it. To sign out on the server,
+stop the service and run `docker compose run --rm --no-deps actual-ai node dist/src/chatgpt-login.js logout`.
+If revocation cannot be confirmed, disconnect the app in ChatGPT settings.
+
+The provider discovers an available model when `CHATGPT_MODEL` is empty. Model tool calling,
+including ValueSerp calls initiated by the model, is unavailable with this provider. If sign-in,
+quota or a request fails, the current batch stops without marking the affected transaction as
+unclassified. After an interrupted process, a stale `.credentials.lock` can prevent access;
+remove it only after confirming no other process is using the credential directory.
 
 ## Feature Configuration
 

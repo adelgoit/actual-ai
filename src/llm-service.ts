@@ -5,9 +5,14 @@ import {
 import RateLimiter from './utils/rate-limiter';
 import { PROVIDER_LIMITS } from './utils/provider-limits';
 import { parseLlmResponse } from './utils/json-utils';
+import { getAccessToken } from './chatgpt-auth';
+import { chatgptInference } from './chatgpt-inference';
+import ChatgptUnavailableError from './chatgpt-unavailable-error';
 
 export default class LlmService implements LlmServiceI {
-  private readonly model: LanguageModel;
+  private readonly model?: LanguageModel;
+
+  private readonly chatgptModel: string;
 
   private readonly rateLimiter: RateLimiter;
 
@@ -32,16 +37,21 @@ export default class LlmService implements LlmServiceI {
       temperature?: number;
       requestsPerMinuteOverride?: number | null;
       tokensPerMinuteOverride?: number | null;
+      chatgptModel?: string;
     },
   ) {
     const factory = llmModelFactory;
-    this.model = factory.create();
     this.provider = factory.getProvider();
+    this.model = this.provider === 'chatgpt' ? undefined : factory.create();
+    this.chatgptModel = options?.chatgptModel ?? '';
     this.rateLimiter = rateLimiter;
     this.toolService = toolService;
     this.timeoutMs = options?.timeoutMs ?? 120_000;
     this.openrouterEnableToolCalling = options?.openrouterEnableToolCalling ?? false;
     this.temperature = options?.temperature;
+    if (this.provider === 'chatgpt' && this.toolService) {
+      console.warn('Model tool calling is not available with the ChatGPT plan provider.');
+    }
 
     // Resolve effective rate limits per axis with trichotomy:
     //   override === null      → fall back to provider default
@@ -96,6 +106,25 @@ export default class LlmService implements LlmServiceI {
   }
 
   public async ask(prompt: string): Promise<UnifiedResponse> {
+    if (this.provider === 'chatgpt') {
+      let text: string;
+      try {
+        text = await this.rateLimiter.executeWithRateLimiting(this.provider, async () => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+          try {
+            const token = await getAccessToken();
+            return await chatgptInference(prompt, token, this.chatgptModel, controller.signal);
+          } finally {
+            clearTimeout(timer);
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown ChatGPT error';
+        throw new ChatgptUnavailableError(message);
+      }
+      return this.parseResponse(text);
+    }
     try {
       console.log(`Making LLM request to ${this.provider}`);
 
@@ -105,7 +134,7 @@ export default class LlmService implements LlmServiceI {
         const tools = this.supportsToolCalling() ? this.toolService?.getTools() : undefined;
         try {
           const { text } = await generateText({
-            model: this.model,
+            model: this.model!,
             prompt,
             temperature: this.temperature ?? 0.2,
             tools,

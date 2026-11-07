@@ -16,6 +16,7 @@ export const llmProvider = process.env.LLM_PROVIDER ?? (openrouterApiKey ? 'open
 export const openaiBaseURL = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
 export const openaiApiKey = process.env.OPENAI_API_KEY ?? '';
 export const openaiModel = process.env.OPENAI_MODEL ?? 'gpt-4.1-mini';
+export const chatgptModel = process.env.CHATGPT_MODEL ?? '';
 export const openrouterBaseURL = process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1';
 export const openrouterModel = process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-v3.2';
 export const openrouterReferrer = process.env.OPENROUTER_REFERRER ?? process.env.OPENROUTER_REFERER ?? '';

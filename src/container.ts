@@ -8,6 +8,7 @@ import {
   anthropicBaseURL,
   anthropicModel,
   budgetId,
+  chatgptModel,
   dataDir,
   e2ePassword,
   getEnabledTools,
@@ -115,6 +116,7 @@ const llmService = new LlmService(
     temperature: llmTemperature,
     requestsPerMinuteOverride,
     tokensPerMinuteOverride,
+    chatgptModel,
   },
 );
 

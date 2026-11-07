@@ -9,6 +9,7 @@ import {
   PromptGeneratorI,
 } from '../types';
 import TagService from './tag-service';
+import ChatgptUnavailableError from '../chatgpt-unavailable-error';
 
 class TransactionProcessor {
   private readonly actualApiService: ActualApiServiceI;
@@ -71,6 +72,7 @@ class TransactionProcessor {
         this.tagService.addNotGuessedTag(transaction.notes ?? ''),
       );
     } catch (error) {
+      if (error instanceof ChatgptUnavailableError) throw error;
       console.error(`Error processing transaction ${transaction.id}:`, error);
       await this.actualApiService.updateTransactionNotes(
         transaction.id,

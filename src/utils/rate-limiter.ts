@@ -165,6 +165,7 @@ class RateLimiter {
 
   private isRateLimitError(error: unknown): boolean {
     if (error instanceof Error) {
+      if ('code' in error && error.code === 'subscription_sharing_usage_limit_exceeded') return false;
       // Check for common rate limit status codes and messages
       const rateLimitError = error as Partial<RateLimitError>;
       if ('statusCode' in error && rateLimitError.statusCode === 429) {
